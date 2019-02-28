@@ -15,22 +15,21 @@
  * along with Packetgraph.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#![feature(plugin, custom_derive)]
-#![plugin(rocket_codegen)]
+#![feature(proc_macro_hygiene, decl_macro)]
 
-extern crate rocket;
+#[macro_use] extern crate rocket;
+#[macro_use] extern crate rocket_contrib;
+#[macro_use] extern crate serde_derive;
 extern crate serde_json;
-#[macro_use]
-extern crate rocket_contrib;
-#[macro_use]
-extern crate serde_derive;
 extern crate pg;
 
+use rocket::http::RawStr;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use pg::{Brick, Graph, Nop, Firewall, Switch, Tap, Hub, Side, Nic};
 use rocket::{State, Rocket};
-use rocket_contrib::{JSON, Value};
+use rocket::request::Form;
+use rocket_contrib::json::{Json, JsonValue};
 use rocket::response::content::Content;
 use rocket::http::ContentType;
 use std::thread;
@@ -79,9 +78,9 @@ impl GraphDescription {
     }
 }
 
-fn result<S: Into<String>>(status: bool, description: S) -> JSON<Value> {
+fn result<S: Into<String>>(status: bool, description: S) -> Json<JsonValue> {
     let d = description.into();
-    JSON(json!({
+    Json(json!({
         "status": match status {
             true => "ok",
             false => "error",
@@ -96,18 +95,18 @@ struct ApiDescription {
 }
 
 #[get("/")]
-fn index() -> JSON<ApiDescription> {
-    JSON(ApiDescription{version: String::from(API_VERSION)})
+fn index() -> Json<ApiDescription> {
+    Json(ApiDescription{version: String::from(API_VERSION)})
 }
 
 #[get("/graph")]
-fn graphs(graphs: State<GraphMap>) -> Option<JSON<Vec<String>>> {
+fn graphs(graphs: State<GraphMap>) -> Option<Json<Vec<String>>> {
     let map = graphs.read().unwrap();
     let mut res = Vec::<String>::new();
     for (name, _) in map.iter() {
         res.push(name.clone());
     }
-    return Some(JSON(res));
+    return Some(Json(res));
 }
 
 #[derive(FromForm)]
@@ -115,8 +114,8 @@ struct GraphCreation {
     name: String
 }
 
-#[get("/graph/new?<graph>")]
-fn graph_new(graphs: State<GraphMap>, graph: GraphCreation) -> Option<JSON<Value>> {
+#[get("/graph/new?<graph..>")]
+fn graph_new(graphs: State<GraphMap>, graph: Form<GraphCreation>) -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     if map.get(&graph.name).is_some() {
         return Some(result(false, "graph already exists"));
@@ -132,7 +131,7 @@ fn graph_new(graphs: State<GraphMap>, graph: GraphCreation) -> Option<JSON<Value
 }
 
 #[get("/graph/<graph_name>")]
-fn graph_get(graphs: State<GraphMap>, graph_name: String) -> Option<JSON<GraphDescription>> {
+fn graph_get(graphs: State<GraphMap>, graph_name: String) -> Option<Json<GraphDescription>> {
     let map = graphs.read().unwrap();
     let g = match map.get(&graph_name) {
         Some(g) => g,
@@ -141,13 +140,13 @@ fn graph_get(graphs: State<GraphMap>, graph_name: String) -> Option<JSON<GraphDe
 
     let g = g.read().unwrap();
     let desc = GraphDescription::new(&g.graph);
-    return Some(JSON(desc));
+    return Some(Json(desc));
 }
 
 #[get("/graph/<graph_name>/delete")]
-fn graph_delete(graphs: State<GraphMap>, graph_name: &str) -> Option<JSON<Value>> {
+fn graph_delete(graphs: State<GraphMap>, graph_name: String) -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
-    match map.remove(graph_name) {
+    match map.remove(&graph_name) {
         Some(g) => {
             let mut g = g.write().unwrap();
             g.run = false;
@@ -189,7 +188,7 @@ fn dot_get_svg(graphs: State<GraphMap>, graph_name: String) -> Option<Content<St
 fn brick_get(graphs: State<GraphMap>,
              graph_name: String,
              brick_name: String)
-             -> Option<JSON<BrickDescription>> {
+             -> Option<Json<BrickDescription>> {
     let map = graphs.read().unwrap();
     let g = match map.get(&graph_name) {
         Some(g) => g,
@@ -201,7 +200,7 @@ fn brick_get(graphs: State<GraphMap>,
         None => return None,
     };
     let desc = BrickDescription::new(b);
-    return Some(JSON(desc));
+    return Some(Json(desc));
 }
 
 #[derive(FromForm)]
@@ -210,8 +209,8 @@ struct LinkCreation {
     east: String,
 }
 
-#[get("/graph/<graph_name>/brick/link?<link>")]
-fn link(graphs: State<GraphMap>, graph_name: String, link: LinkCreation) -> Option<JSON<Value>> {
+#[get("/graph/<graph_name>/brick/link?<link..>")]
+fn link(graphs: State<GraphMap>, graph_name: String, link: Form<LinkCreation>) -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -221,7 +220,7 @@ fn link(graphs: State<GraphMap>, graph_name: String, link: LinkCreation) -> Opti
     let mut g = g.write().unwrap();
     let west = g.graph.bricks.remove(&link.west);
     let east = g.graph.bricks.remove(&link.east);
-    let mut ret: Option<JSON<Value>> = None;
+    let mut ret: Option<Json<JsonValue>> = None;
 
     if west.is_some() && east.is_some() {
         let mut w = west.unwrap();
@@ -230,15 +229,15 @@ fn link(graphs: State<GraphMap>, graph_name: String, link: LinkCreation) -> Opti
             Ok(()) => Some(result(true, "")),
             Err(e) => Some(result(false, format!("{}", e))),
         };
-        g.graph.bricks.insert(link.west, w);
-        g.graph.bricks.insert(link.east, e);
+        g.graph.bricks.insert(link.west.clone(), w);
+        g.graph.bricks.insert(link.east.clone(), e);
     } else if west.is_none() && east.is_none() {
         ret = Some(result(false, "west and east bricks not found"));
     } else if west.is_none() {
-        g.graph.bricks.insert(link.east, east.unwrap());
+        g.graph.bricks.insert(link.east.clone(), east.unwrap());
         ret = Some(result(false, "west brick not found"));
     } else if east.is_none() {
-        g.graph.bricks.insert(link.west, west.unwrap());
+        g.graph.bricks.insert(link.west.clone(), west.unwrap());
         ret = Some(result(false, "east brick not found"));
     }
     return ret;
@@ -250,8 +249,8 @@ struct LinkDeletion {
     east: String,
 }
 
-#[get("/graph/<graph_name>/brick/unlink?<unlink>")]
-fn unlink_from(graphs: State<GraphMap>, graph_name: String, unlink: LinkDeletion) -> Option<JSON<Value>> {
+#[get("/graph/<graph_name>/brick/unlink?<unlink..>")]
+fn unlink_from(graphs: State<GraphMap>, graph_name: String, unlink: Form<LinkDeletion>) -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -261,7 +260,7 @@ fn unlink_from(graphs: State<GraphMap>, graph_name: String, unlink: LinkDeletion
     let mut g = g.write().unwrap();
     let west = g.graph.bricks.remove(&unlink.west);
     let east = g.graph.bricks.remove(&unlink.east);
-    let mut ret: Option<JSON<Value>> = None;
+    let mut ret: Option<Json<JsonValue>> = None;
 
     if west.is_some() && east.is_some() {
         let mut w = west.unwrap();
@@ -270,15 +269,15 @@ fn unlink_from(graphs: State<GraphMap>, graph_name: String, unlink: LinkDeletion
             Ok(()) => Some(result(true, "")),
             Err(e) => Some(result(false, format!("{}", e))),
         };
-        g.graph.bricks.insert(unlink.west, w);
-        g.graph.bricks.insert(unlink.east, e);
+        g.graph.bricks.insert(unlink.west.clone(), w);
+        g.graph.bricks.insert(unlink.east.clone(), e);
     } else if west.is_none() && east.is_none() {
         ret = Some(result(false, "west and east bricks not found"));
     } else if west.is_none() {
-        g.graph.bricks.insert(unlink.east, east.unwrap());
+        g.graph.bricks.insert(unlink.east.clone(), east.unwrap());
         ret = Some(result(false, "west brick not found"));
     } else if east.is_none() {
-        g.graph.bricks.insert(unlink.west, west.unwrap());
+        g.graph.bricks.insert(unlink.west.clone(), west.unwrap());
         ret = Some(result(false, "east brick not found"));
     }
     return ret;
@@ -288,7 +287,7 @@ fn unlink_from(graphs: State<GraphMap>, graph_name: String, unlink: LinkDeletion
 fn unlink(graphs: State<GraphMap>,
         graph_name: String,
         brick_name: String)
-    -> Option<JSON<Value>> {
+    -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -310,7 +309,7 @@ fn unlink(graphs: State<GraphMap>,
 fn brick_delete(graphs: State<GraphMap>,
                 graph_name: String,
                 brick_name: String)
-                -> Option<JSON<Value>> {
+                -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -329,8 +328,8 @@ struct NopCreation {
     name: String,
 }
 
-#[get("/graph/<graph_name>/brick/new/nop?<nop>")]
-fn nop_new(graphs: State<GraphMap>, graph_name: String, nop: NopCreation) -> Option<JSON<Value>> {
+#[get("/graph/<graph_name>/brick/new/nop?<nop..>")]
+fn nop_new(graphs: State<GraphMap>, graph_name: String, nop: Form<NopCreation>) -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -344,7 +343,7 @@ fn nop_new(graphs: State<GraphMap>, graph_name: String, nop: NopCreation) -> Opt
 
     g.graph
         .bricks
-        .insert(nop.name.clone(), Brick::Nop(Nop::new(nop.name)));
+        .insert(nop.name.clone(), Brick::Nop(Nop::new(nop.name.clone())));
     Some(result(true, ""))
 }
 
@@ -353,8 +352,8 @@ struct TapCreation {
     name: String,
 }
 
-#[get("/graph/<graph_name>/brick/new/tap?<tap>")]
-fn tap_new(graphs: State<GraphMap>, graph_name: String, tap: TapCreation) -> Option<JSON<Value>> {
+#[get("/graph/<graph_name>/brick/new/tap?<tap..>")]
+fn tap_new(graphs: State<GraphMap>, graph_name: String, tap: Form<TapCreation>) -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -368,7 +367,7 @@ fn tap_new(graphs: State<GraphMap>, graph_name: String, tap: TapCreation) -> Opt
 
     g.graph
         .bricks
-        .insert(tap.name.clone(), Brick::Tap(Tap::new(tap.name)));
+        .insert(tap.name.clone(), Brick::Tap(Tap::new(tap.name.clone())));
     Some(result(true, ""))
 }
 
@@ -379,8 +378,8 @@ struct HubCreation {
     east_ports: u32,
 }
 
-#[get("/graph/<graph_name>/brick/new/hub?<hub>")]
-fn hub_new(graphs: State<GraphMap>, graph_name: String, hub: HubCreation) -> Option<JSON<Value>> {
+#[get("/graph/<graph_name>/brick/new/hub?<hub..>")]
+fn hub_new(graphs: State<GraphMap>, graph_name: String, hub: Form<HubCreation>) -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -395,7 +394,7 @@ fn hub_new(graphs: State<GraphMap>, graph_name: String, hub: HubCreation) -> Opt
     g.graph
         .bricks
         .insert(hub.name.clone(),
-                Brick::Hub(Hub::new(hub.name, hub.west_ports, hub.east_ports)));
+                Brick::Hub(Hub::new(hub.name.clone(), hub.west_ports, hub.east_ports)));
     Some(result(true, ""))
 }
 
@@ -407,11 +406,11 @@ struct SwitchCreation {
     side: String,
 }
 
-#[get("/graph/<graph_name>/brick/new/switch?<switch>")]
+#[get("/graph/<graph_name>/brick/new/switch?<switch..>")]
 fn switch_new(graphs: State<GraphMap>,
               graph_name: String,
-              switch: SwitchCreation)
-              -> Option<JSON<Value>> {
+              switch: Form<SwitchCreation>)
+              -> Option<Json<JsonValue>> {
     let side = match Side::from_str(switch.side.as_str()) {
         Ok(s) => s,
         Err(_) => return Some(result(false, "choose west or east for side parameter")),
@@ -430,7 +429,7 @@ fn switch_new(graphs: State<GraphMap>,
     g.graph
         .bricks
         .insert(switch.name.clone(),
-                Brick::Switch(Switch::new(switch.name,
+                Brick::Switch(Switch::new(switch.name.clone(),
                                           switch.west_ports,
                                           switch.east_ports,
                                           side)));
@@ -444,8 +443,8 @@ struct NicCreation {
     port: Option<u8>,
 }
 
-#[get("/graph/<graph_name>/brick/new/nic?<nic>")]
-fn nic_new(graphs: State<GraphMap>, graph_name: String, nic: NicCreation) -> Option<JSON<Value>> {
+#[get("/graph/<graph_name>/brick/new/nic?<nic..>")]
+fn nic_new(graphs: State<GraphMap>, graph_name: String, nic: Form<NicCreation>) -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -462,14 +461,14 @@ fn nic_new(graphs: State<GraphMap>, graph_name: String, nic: NicCreation) -> Opt
     }
 
     let nic_brick = match nic.vdev.is_some() {
-        true => Nic::new(nic.name.clone(), nic.vdev.unwrap()),
+        true => Nic::new(nic.name.clone(), nic.vdev.clone().unwrap()),
         false => Nic::new_port(nic.name.clone(), nic.port.unwrap()),
     };
     let nic_brick = match nic_brick {
         Ok(n) => n,
         Err(e) => return Some(result(false, format!("cannot create nic: {}", e))),
     };
-    g.graph.bricks.insert(nic.name, Brick::Nic(nic_brick));
+    g.graph.bricks.insert(nic.name.clone(), Brick::Nic(nic_brick));
     Some(result(true, ""))
 }
 
@@ -478,11 +477,11 @@ struct FirewallCreation {
     name: String,
 }
 
-#[get("/graph/<graph_name>/brick/new/firewall?<firewall>")]
+#[get("/graph/<graph_name>/brick/new/firewall?<firewall..>")]
 fn firewall_new(graphs: State<GraphMap>,
                 graph_name: String,
-                firewall: FirewallCreation)
-                -> Option<JSON<Value>> {
+                firewall: Form<FirewallCreation>)
+                -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -497,7 +496,7 @@ fn firewall_new(graphs: State<GraphMap>,
     g.graph
         .bricks
         .insert(firewall.name.clone(),
-                Brick::Firewall(Firewall::new(firewall.name)));
+                Brick::Firewall(Firewall::new(firewall.name.clone())));
     Some(result(true, ""))
 }
 
@@ -507,12 +506,12 @@ struct FirewallRule {
     side: String,
 }
 
-#[get("/graph/<graph_name>/brick/<brick_name>/firewall/rule?<rule>")]
+#[get("/graph/<graph_name>/brick/<brick_name>/firewall/rule?<rule..>")]
 fn firewall_rule_add(graphs: State<GraphMap>,
                      graph_name: String,
                      brick_name: String,
-                     rule: FirewallRule)
-                     -> Option<JSON<Value>> {
+                     rule: Form<FirewallRule>)
+                     -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -535,7 +534,7 @@ fn firewall_rule_add(graphs: State<GraphMap>,
         Err(_) => return Some(result(false, "choose west or east for side parameter")),
     };
 
-    match fw.rule_add(rule.filter, side) {
+    match fw.rule_add(rule.filter.clone(), side) {
         Ok(_) => Some(result(true, "")),
         Err(e) => Some(result(false, format!("{}", e))),
     }
@@ -545,7 +544,7 @@ fn firewall_rule_add(graphs: State<GraphMap>,
 fn firewall_flush(graphs: State<GraphMap>,
                   graph_name: String,
                   brick_name: String)
-                  -> Option<JSON<Value>> {
+                  -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
@@ -571,7 +570,7 @@ fn firewall_flush(graphs: State<GraphMap>,
 fn firewall_reload(graphs: State<GraphMap>,
                    graph_name: String,
                    brick_name: String)
-                   -> Option<JSON<Value>> {
+                   -> Option<Json<JsonValue>> {
     let mut map = graphs.write().unwrap();
     let g = match map.get_mut(&graph_name) {
         Some(g) => g,
