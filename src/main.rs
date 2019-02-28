@@ -23,7 +23,6 @@
 extern crate serde_json;
 extern crate pg;
 
-use rocket::http::RawStr;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use pg::{Brick, Graph, Nop, Firewall, Switch, Tap, Hub, Side, Nic};
@@ -295,7 +294,7 @@ fn unlink(graphs: State<GraphMap>,
     };
 
     let mut g = g.write().unwrap();
-    let mut b = match g.graph.bricks.get_mut(&brick_name) {
+    let b = match g.graph.bricks.get_mut(&brick_name) {
         Some(b) => b,
         None => return None,
     };
@@ -519,12 +518,12 @@ fn firewall_rule_add(graphs: State<GraphMap>,
     };
 
     let mut g = g.write().unwrap();
-    let mut b = match g.graph.bricks.get_mut(&brick_name) {
+    let b = match g.graph.bricks.get_mut(&brick_name) {
         Some(b) => b,
         None => return None,
     };
 
-    let mut fw = match b.firewall() {
+    let fw = match b.firewall() {
         Some(fw) => fw,
         None => return None,
     };
@@ -552,12 +551,12 @@ fn firewall_flush(graphs: State<GraphMap>,
     };
 
     let mut g = g.write().unwrap();
-    let mut b = match g.graph.bricks.get_mut(&brick_name) {
+    let b = match g.graph.bricks.get_mut(&brick_name) {
         Some(b) => b,
         None => return None,
     };
 
-    let mut fw = match b.firewall() {
+    let fw = match b.firewall() {
         Some(fw) => fw,
         None => return None,
     };
@@ -578,12 +577,12 @@ fn firewall_reload(graphs: State<GraphMap>,
     };
 
     let mut g = g.write().unwrap();
-    let mut b = match g.graph.bricks.get_mut(&brick_name) {
+    let b = match g.graph.bricks.get_mut(&brick_name) {
         Some(b) => b,
         None => return None,
     };
 
-    let mut fw = match b.firewall() {
+    let fw = match b.firewall() {
         Some(fw) => fw,
         None => return None,
     };
@@ -641,13 +640,11 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use rocket::Rocket;
-    use rocket::testing::MockRequest;
-    use rocket::http::{Status, Method};
+    use rocket::local::Client;
+    use rocket::http::Status;
 
-    fn request_ok(rocket: &Rocket, url: &'static str) {
-        let mut req = MockRequest::new(Method::Get, url);
-        let response = req.dispatch_with(&rocket);
+    fn request_ok(client: &Client, url: &'static str) {
+        let response = client.get(url).dispatch();
         assert_eq!(response.status(), Status::Ok);
         // TODO: check some response content
         //let body_str = response.body().and_then(|b| b.into_string());
@@ -657,42 +654,44 @@ mod test {
     #[test]
     fn simple() {
         let r = rocket_init();
-        request_ok(&r, "/graph/new?name=mygraph");
-        request_ok(&r, "/graph/mygraph");
-        request_ok(&r, "/graph/mygraph/brick/new/tap?name=tap1");
-        request_ok(&r, "/graph/mygraph/brick/new/nop?name=nop1");
-        request_ok(&r, "/graph/mygraph/brick/new/tap?name=tap2");
-        request_ok(&r, "/graph/mygraph/brick/new/switch?name=switch1&west_ports=2&east_ports=2&side=west");
-        request_ok(&r, "/graph/mygraph/brick/tap1");
-        request_ok(&r, "/graph/mygraph/brick/nop1");
-        request_ok(&r, "/graph/mygraph/brick/tap2");
-        request_ok(&r, "/graph/mygraph/brick/switch1");
-        request_ok(&r, "/graph/mygraph/brick/link?west=tap1&east=switch1");
-        request_ok(&r, "/graph/mygraph/brick/link?west=nop1&east=switch1");
-        request_ok(&r, "/graph/mygraph/brick/link?west=switch1&east=tap2");
-        request_ok(&r, "/graph/mygraph/brick/unlink?west=tap1&east=switch1");
-        request_ok(&r, "/graph/mygraph");
-        request_ok(&r, "/graph/mygraph/brick/switch1/unlink");
-        request_ok(&r, "/graph/mygraph/delete");
+        let c = Client::new(r).expect("valid rocket instance");
+        request_ok(&c, "/graph/new?name=mygraph");
+        request_ok(&c, "/graph/mygraph");
+        request_ok(&c, "/graph/mygraph/brick/new/tap?name=tap1");
+        request_ok(&c, "/graph/mygraph/brick/new/nop?name=nop1");
+        request_ok(&c, "/graph/mygraph/brick/new/tap?name=tap2");
+        request_ok(&c, "/graph/mygraph/brick/new/switch?name=switch1&west_ports=2&east_ports=2&side=west");
+        request_ok(&c, "/graph/mygraph/brick/tap1");
+        request_ok(&c, "/graph/mygraph/brick/nop1");
+        request_ok(&c, "/graph/mygraph/brick/tap2");
+        request_ok(&c, "/graph/mygraph/brick/switch1");
+        request_ok(&c, "/graph/mygraph/brick/link?west=tap1&east=switch1");
+        request_ok(&c, "/graph/mygraph/brick/link?west=nop1&east=switch1");
+        request_ok(&c, "/graph/mygraph/brick/link?west=switch1&east=tap2");
+        request_ok(&c, "/graph/mygraph/brick/unlink?west=tap1&east=switch1");
+        request_ok(&c, "/graph/mygraph");
+        request_ok(&c, "/graph/mygraph/brick/switch1/unlink");
+        request_ok(&c, "/graph/mygraph/delete");
     }
 
     #[test]
     fn firewall() {
         let r = rocket_init();
-        request_ok(&r, "/graph/new?name=mygraph");
-        request_ok(&r, "/graph/mygraph");
-        request_ok(&r, "/graph/mygraph/brick/new/tap?name=tap1");
-        request_ok(&r, "/graph/mygraph/brick/new/firewall?name=fw");
-        request_ok(&r, "/graph/mygraph/brick/new/tap?name=tap2");
-        request_ok(&r, "/graph/mygraph/brick/tap1");
-        request_ok(&r, "/graph/mygraph/brick/fw");
-        request_ok(&r, "/graph/mygraph/brick/tap2");
-        request_ok(&r, "/graph/mygraph/brick/link?west=tap1&east=fw");
-        request_ok(&r, "/graph/mygraph/brick/link?west=fw&east=tap2");
-        request_ok(&r, "/graph/mygraph/brick/fw/firewall/rule?side=west&filter=src%20host%2010%3A%3A1");
-        request_ok(&r, "/graph/mygraph/brick/fw/firewall/flush");
-        request_ok(&r, "/graph/mygraph/brick/fw/firewall/rule?side=west&filter=src%20host%2010%3A%3A1");
-        request_ok(&r, "/graph/mygraph/brick/fw/firewall/rule?side=west&filter=src%20host%2010%3A%3A2");
-        request_ok(&r, "/graph/mygraph/brick/fw/firewall/reload");
+        let c = Client::new(r).expect("valid rocket instance");
+        request_ok(&c, "/graph/new?name=mygraph");
+        request_ok(&c, "/graph/mygraph");
+        request_ok(&c, "/graph/mygraph/brick/new/tap?name=tap1");
+        request_ok(&c, "/graph/mygraph/brick/new/firewall?name=fw");
+        request_ok(&c, "/graph/mygraph/brick/new/tap?name=tap2");
+        request_ok(&c, "/graph/mygraph/brick/tap1");
+        request_ok(&c, "/graph/mygraph/brick/fw");
+        request_ok(&c, "/graph/mygraph/brick/tap2");
+        request_ok(&c, "/graph/mygraph/brick/link?west=tap1&east=fw");
+        request_ok(&c, "/graph/mygraph/brick/link?west=fw&east=tap2");
+        request_ok(&c, "/graph/mygraph/brick/fw/firewall/rule?side=west&filter=src%20host%2010%3A%3A1");
+        request_ok(&c, "/graph/mygraph/brick/fw/firewall/flush");
+        request_ok(&c, "/graph/mygraph/brick/fw/firewall/rule?side=west&filter=src%20host%2010%3A%3A1");
+        request_ok(&c, "/graph/mygraph/brick/fw/firewall/rule?side=west&filter=src%20host%2010%3A%3A2");
+        request_ok(&c, "/graph/mygraph/brick/fw/firewall/reload");
     }
 }
